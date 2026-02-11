@@ -1,0 +1,235 @@
+from dataclasses import dataclass
+import pandas as pd
+import numpy as np
+import glob
+import os
+import math
+# gpt helped me fix my code to be cleaner ;-; it looks good af omg
+# =======================
+# Config
+# =======================
+root_folder = r"C:\Users\marie\Downloads\person_detect_extracted"
+
+target_fps = 25
+f_clk = 100_000_000  # 100 MHz used in DSE
+max_clk_cycles_per_frame = f_clk / target_fps
+
+max_BW = 533_000_000  # Zybo Z7-20
+
+sizes = [(3,3), (4,4), (8,8), (16,16), (32,32)]
+
+# =======================
+# Find mem files
+# =======================
+mem_files = glob.glob(os.path.join(root_folder, "**/*.mem"), recursive=True)
+print(f"Found {len(mem_files)} .mem files")
+
+# =======================
+# Extract shapes
+# =======================
+layers_info = []
+
+for mem_file in mem_files:
+    layer_name = os.path.splitext(os.path.basename(mem_file))[0]
+    with open(mem_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("# shape:"):
+                shape_str = line[len("# shape:"):].strip()
+                shape = tuple(int(x.strip()) for x in shape_str.strip("()").split(",") if x.strip())
+                layers_info.append({
+                    "layer": layer_name,
+                    "shape": shape
+                })
+                break
+
+print(f"Extracted {len(layers_info)} layer shapes")
+
+# =======================
+# Layer models
+# =======================
+@dataclass
+class DWConvLayer:
+    H: int
+    W: int
+    C: int
+    K: int  # kernel size
+
+@dataclass
+class PWConvLayer:
+    H: int
+    W: int
+    C_in: int
+    C_out: int
+
+# =======================
+# Cycle models
+# =======================
+def cycles_pointwise(layer: PWConvLayer, row, col):
+    H, W, C_in, C_out = layer.H, layer.W, layer.C_in, layer.C_out
+    t_macs = H * W * C_in * C_out
+
+    effective_parallel = min(row, C_in) * min(col, C_out)
+    overhead = row + col - 2
+
+    return math.ceil(t_macs / effective_parallel) + overhead
+
+def cycles_depthwise(layer: DWConvLayer, row, col):
+    H, W, C, K = layer.H, layer.W, layer.C, layer.K
+    t_macs = H * W * C * K * K
+
+    effective_parallel = min(row * col, C)  # simple model: parallel over channels
+    overhead = row + col - 2
+
+    return math.ceil(t_macs / effective_parallel) + overhead
+
+def utilization_pw(layer: PWConvLayer, row, col):
+    active = min(row, layer.C_in) * min(col, layer.C_out)
+    return active / (row * col)
+
+def utilization_dw(layer: DWConvLayer, row, col):
+    active = min(row * col, layer.C)
+    return active / (row * col)
+
+def needed_BW(row, col, bitwidth=8):
+    return (row + col) * bitwidth * f_clk # DISCLAIMER: 
+                                          # very not so optimistic formula.
+                                          #  will change it some other time
+
+# =======================
+# Heuristic: detect DW vs PW
+# =======================
+def classify_layer(shape):
+    # Bias / 1D tensors -> skip
+    if len(shape) == 1:
+        return "BIAS", None, None, None
+
+    if len(shape) == 4:
+        a, b, c, d = shape
+
+        # Case 1: Depthwise in TFLite: (1, K, K, C)
+        if a == 1 and b == c and b > 1:
+            K = b
+            C = d
+            return "DW", K, C, C
+
+        # Case 2: Other depthwise layouts: (K, K, 1, C) or (K, K, C, 1)
+        if b == c and (a == 1 or d == 1):
+            K = b
+            C = d if a == 1 else c
+            return "DW", K, C, C
+
+        # Case 3: Pointwise: (1, 1, C_in, C_out)
+        if a == 1 and b == 1:
+            return "PW", 1, c, d
+
+        # Fallback: treat as pointwise
+        return "PW", 1, c, d
+
+    if len(shape) == 2:
+        # (C_in, C_out) -> pointwise
+        return "PW", 1, shape[0], shape[1]
+
+    # Fallback
+    return "PW", 1, shape[-2], shape[-1]
+
+
+
+# =======================
+# Sweep sizes
+# =======================
+all_layer_results = []
+
+# Assume input image size (update per layer later if you track feature map sizes)
+H0, W0 = 96, 96
+
+for info in layers_info:
+    shape = info["shape"]
+    layer_name = info["layer"]
+
+    kind, K, Cin, Cout = classify_layer(shape)
+    if kind == "BIAS":
+        continue
+
+    for (row, col) in sizes:
+        if kind == "DW":
+            layer = DWConvLayer(H=H0, W=W0, C=Cin, K=K)
+            cycles = cycles_depthwise(layer, row, col)
+            utiliz = utilization_dw(layer, row, col)
+            ltype = "DW"
+            K_show = K
+            C_in_show = Cin
+            C_out_show = Cin  # depthwise: C_out == C_in
+        else:
+            layer = PWConvLayer(H=H0, W=W0, C_in=Cin, C_out=Cout)
+            cycles = cycles_pointwise(layer, row, col)
+            utiliz = utilization_pw(layer, row, col)
+            ltype = "PW"
+            K_show = 1
+            C_in_show = Cin
+            C_out_show = Cout
+
+        all_layer_results.append({
+            "layer": layer_name,
+            "type": ltype,
+            "K": K_show,            # <-- kernel size (DW shows 3, PW shows 1)
+            "C_in": C_in_show,
+            "C_out": C_out_show,
+            "row": row,
+            "col": col,
+            "number of cycles": cycles,
+            "utilization": utiliz
+        })
+
+df_all = pd.DataFrame(all_layer_results)
+
+print("\nPer-layer results (showing type):")
+print(df_all[["layer", "type", "K", "C_in", "C_out", "row", "col", "number of cycles", "utilization"]].head(20))
+print("\nLayer type counts:")
+print(df_all[["layer", "type"]].drop_duplicates()["type"].value_counts())
+print("\nTotal cycles by layer type (for each array size):")
+print(df_all.groupby(["row", "col", "type"])["number of cycles"].sum().reset_index())
+print("\nUnique shapes found:")
+for s in sorted(set([tuple(x["shape"]) for x in layers_info])):
+    print(s)
+
+
+# =======================
+# Sum per frame
+# =======================
+cycles_per_frame = []
+
+for (row, col), group in df_all.groupby(["row", "col"]):
+    total_cycles = group["number of cycles"].sum()
+    avg_utiliz = group["utilization"].mean()
+    meet_fps_bool = total_cycles <= max_clk_cycles_per_frame
+    bw_bool = needed_BW(row, col) <= max_BW
+
+    cycles_per_frame.append({
+        "row": row,
+        "col": col,
+        "total_cycles_per_frame": total_cycles,
+        "avg_utilization": avg_utiliz,
+        "meet_fps?": meet_fps_bool,
+        "BW_ok?***": bw_bool,
+        "FPS_est": f_clk / total_cycles
+    })
+
+df_frame = pd.DataFrame(cycles_per_frame)
+
+print(f"\nTarget FPS = {target_fps} for 96x96 image input")
+print(df_frame)
+
+# =======================
+# Score designs
+# =======================
+df_frame["score"] = (
+    df_frame["meet_fps?"].astype(int) * 100 +
+    df_frame["avg_utilization"] * 10 -
+    df_frame["row"] * df_frame["col"] * 0.01
+)
+
+best = df_frame.sort_values("score", ascending=False)
+
+print("\nRanked designs:")
+print(best)
