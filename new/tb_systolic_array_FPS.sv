@@ -32,8 +32,15 @@ module tb_top_systolic_array;
     // Clock generation
     initial begin
         clk = 0;
-        forever #5 clk = ~clk; // 100 MHz
+        forever #5 clk = ~clk;
     end
+
+    
+    initial begin
+        #1;
+        $display("TB clk = %b", clk);
+    end
+
 
     // Reset
     initial begin
@@ -53,12 +60,27 @@ module tb_top_systolic_array;
 
     // Wait for array to propagate
     initial begin
-        #(1000); // wait long enough for all cycles
+        nrst = 0;
+        i_ifmap = 0;
+        i_weight = 0;
+        
+        #10;  // Wait for reset to release
+        nrst = 1;
+        
+        // Now set input data AFTER reset is released
+        #5;   // Wait half a clock cycle
+        for (integer k = 0; k < N; k = k + 1) begin
+            i_ifmap[k] = k + 1;   // 1..8
+            i_weight[k] = 8'd1;   // all ones
+        end
+    end
 
+    // Wait for array to propagate
+    initial begin
+        #(2000);  // Increased wait time
         $display("LED output: %b", led);
         $display("Full ofmap:");
         print_ofmap();
-
         $finish;
     end
 

@@ -1,5 +1,3 @@
-`timescale 1ns / 1ps
-
 module systolic_array #(
     parameter DATA_WIDTH = 8,
     parameter WIDTH = 8,
