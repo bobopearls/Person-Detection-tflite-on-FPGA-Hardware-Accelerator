@@ -43,23 +43,24 @@ module tb_top_systolic_array;
 
 
     // Reset
-    initial begin
+/*    initial begin
         nrst = 0;
         #10;
         nrst = 1;
-    end
+    end*/
 
     // Feed example ifmap and weight values
-    integer k;
+/*    integer k;
     initial begin
         for (k = 0; k < N; k = k + 1) begin
             i_ifmap[k] = k + 1;   // 1..8
             i_weight[k] = 8'd1;   // all ones
         end
-    end
+    end*/
 
     // Wait for array to propagate
-    initial begin
+    // fix this because it just keeps sending in inputs
+/*    initial begin
         nrst = 0;
         i_ifmap = 0;
         i_weight = 0;
@@ -73,11 +74,36 @@ module tb_top_systolic_array;
             i_ifmap[k] = k + 1;   // 1..8
             i_weight[k] = 8'd1;   // all ones
         end
+    end*/
+    initial begin
+        // Initialize
+        nrst     = 0;
+        i_ifmap  = 0;
+        i_weight = 0;
+    
+        // Hold reset for 2 clocks
+        repeat (2) @(posedge clk);
+        nrst = 1;
+    
+        // feed k for N clk cycles
+        for (int k = 0; k < N; k++) begin
+            @(posedge clk);
+            for (int k = 0; k < N; k++) begin
+                i_ifmap[k]  = k + 1;   // 1..8
+                i_weight[k] = 8'd1;    // all ones
+            end
+        end
+    
+        // Stop feeding
+        @(posedge clk);
+        i_ifmap  = 0;
+        i_weight = 0;
     end
+
 
     // Wait for array to propagate
     initial begin
-        #(2000);  // Increased wait time
+        repeat (2*N + 5) @(posedge clk);
         $display("LED output: %b", led);
         $display("Full ofmap:");
         print_ofmap();
@@ -85,7 +111,7 @@ module tb_top_systolic_array;
     end
 
     // Task to print ofmap
-    task print_ofmap;
+/*    task print_ofmap;
         integer r, c;
         begin
             for (r = 0; r < N; r = r + 1) begin
@@ -95,6 +121,15 @@ module tb_top_systolic_array;
                 $write("\n");
             end
         end
+    endtask*/
+    task print_ofmap;
+        integer r;
+        begin
+            for (r = 0; r < N; r = r + 1) begin
+                $display("%0d", o_ofmap[r]);
+            end
+        end
     endtask
+
 
 endmodule

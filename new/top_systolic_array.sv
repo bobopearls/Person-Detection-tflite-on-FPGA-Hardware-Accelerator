@@ -17,6 +17,14 @@ module top_systolic_array #(
     wire i_psum_out_en = 1'b1;
     wire i_scan_en     = 1'b0;
     wire [1:0] i_mode  = 2'b00;
+    
+    // From the layer_controller:
+    logic start_tile;
+    logic layer_type;
+    logic [15:0] Cin;
+    logic [31:0] weight_offset;
+    logic tile_done;
+    logic inference_done;
 
     // Counter to track propagation
     logic [$clog2(2*N):0] cycle_count;
@@ -51,6 +59,22 @@ module top_systolic_array #(
         .i_ifmap(ifmap),
         .i_weight(weight),
         .o_ofmap(ofmap)
+    );
+    
+    // instantiate the layer_controller
+    layer_controller u_layer_ctrl (
+        .i_clk(i_clk),
+        .i_nrst(i_nrst),
+        .i_start(i_start),
+    
+        .i_tile_done(tile_done),
+    
+        .o_start_tile(start_tile),
+        .o_layer_type(layer_type),
+        .o_Cin(Cin),
+        .o_weight_offset(weight_offset),
+    
+        .o_done(inference_done)
     );
 
 endmodule
