@@ -20,12 +20,30 @@ module tb_top_systolic_array;
     logic [3:0] led; 
     logic [0:N-1][DATA_WIDTH*2-1:0] ofmap;
     
-    // Handshake Wires aka fake wires HAHAH
+    // Handshake Wires
     logic tb_ir_ready = 0;
     logic tb_wr_ready = 0;
     logic tb_ir_done  = 0;
     logic tb_wr_done  = 0;
     logic tb_or_done  = 0;
+    
+    // Storage for the .mem files of person_detection.tflite
+    // the .mem files have 1 value per line
+    logic [DATA_WIDTH-1:0] weight_mem_raw [0:4095]; // depth of 4096
+    logic [DATA_WIDTH-1:0] ifmap_mem_raw [0:4095];
+    logic [DATA_WIDTH*2-1:0] bias_mem [0:511];
+    
+    // pointer for current byte index
+    integer weight_pointer = 0;
+    integer ifmap_pointer = 0;
+    
+    initial begin
+        // Load the one-value-per-line .mem files
+        $readmemh("MobilenetV1_Conv2d_0_weights_read.mem", weight_mem_raw);
+        $readmemh("video_input_fake.mem", ifmap_mem_raw);
+        $readmemh("MobilenetV1_MobilenetV1_Conv2d_0_Conv2D_bias.mem", bias_mem);
+        $display("--- Person Detection Data Loaded ---");
+    end
     
     // state name display in the Tcl console:
     string state_name;
@@ -54,6 +72,22 @@ module tb_top_systolic_array;
             $display("       Done:  %b", uut.done);
             $display("------------------------------------");
         end
+    end
+    
+    // need to slice the memory to fit the systolic array's NxN matrix
+    // EDIT: this is the reason why the inputs and weights were read weirdly
+    always @(posedge clk) begin
+        if(uut.tile_ctrl.state == 3'd3 && uut.tile_ctrl.o_ir_pop_en)begin 
+            for (int i = 0; i < N; i++)begin
+                ifmap[i] <= ifmap_mem_raw[ifmap_pointer + i];
+                weight[i] <= weight_mem_raw[weight_pointer + i];
+            end
+            ifmap_pointer <= ifmap_pointer + N;// adnvance by 8 to the next one
+            weight_pointer <= weight_pointer + N; 
+        end else if (uut.tile_ctrl.state == 3'd0) begin
+            ifmap_pointer <= 0;
+            weight_pointer <= 0;
+        end      
     end
 
     // --------------------------------------------------
@@ -105,14 +139,20 @@ module tb_top_systolic_array;
         repeat (5) @(posedge clk);
         
         // Step 1: Write Registers (Moves State from IDLE -> IDLE)
-        $display("Setting C_in to 8...");
-        write_reg(16'h04, 32'd8); 
-        $display("Setting Layer Type to 0...");
-        write_reg(16'h00, 32'd0);
+        $display("Setting C_in to 9...");
+        write_reg(8'h04, 32'd9);  // Cin
+        $display("Setting Quantization w/ Mult 1024 and Shift 10...");
+        write_reg(16'h14, 32'd10); // quant shift
+        write_reg(16'h18, 32'd1024); // quant mult
+        
+        // Fake Base Addresses:
+        $display("Setting Dummy Base Addresses...");
+        write_reg(8'h08, 32'hA000); // weight_base_addr
+        write_reg(8'h0C, 32'hB000); // ifmap_base_addr
         
         // Step 2: Start (Moves State IDLE -> CLEAR -> ACTIVATION_ROUTING)
         $display("Triggering Start...");
-        write_reg(16'h0C, 32'h1);
+        write_reg(8'h1C, 32'h1);
         
         // Step 3: Exit ACTIVATION_ROUTING
         wait(uut.tile_ctrl.state == 3'd2);
@@ -120,11 +160,25 @@ module tb_top_systolic_array;
         tb_ir_ready = 1; 
         tb_wr_ready = 1;
         
+        $display("Setting Bias Base Addr and Params...");
+        write_reg(8'h10, 32'h0000_0005); // Bias of 5 (added to every output)
+        write_reg(8'h14, 32'd8);        // quant_shift = 8
+        write_reg(8'h18, 32'd256);      // quant_mult = 256 (Effectively Scale = 1.0)
+        
         // Step 4: Exit FIFO_POP (Moves to COMPUTE)
         wait(uut.tile_ctrl.state == 3'd3);
-        #40;
+        // wait for pointers to finish
+        wait(ifmap_pointer >= 72);
+        #20;
         tb_ir_done = 1; 
         tb_wr_done = 1;
+        
+        wait(uut.tile_ctrl.state == 3'd5); // Wait for OUTPUT_ROUTING
+        $display("Computation Done. Signaling Output Router...");
+        #100;
+        tb_or_done = 1; // Trigger the transition back to IDLE
+        #20;
+        tb_or_done = 0;
 
         // Step 5: Exit OUTPUT_ROUTING (Returns to IDLE)
         wait(uut.tile_ctrl.state == 3'd5);
@@ -133,7 +187,7 @@ module tb_top_systolic_array;
         
         // Step 6: Wait for Control Register Auto-Clear
         wait(uut.done == 1);
-        $display("Computation Finished!");
+        $display("Final Verification: OFMAP[0] = %h", ofmap[0]);
         
         #100;
         $finish;

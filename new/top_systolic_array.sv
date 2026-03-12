@@ -11,7 +11,7 @@ module top_systolic_array #(
     input  logic [0:N-1][DATA_WIDTH-1:0] ifmap,
     input  logic [0:N-1][DATA_WIDTH-1:0] weight,
     
-    //Testbench routers
+    //Handshake pins (will need to replace this with DMA signals sometime soon)
     input  logic i_ir_ready,
     input  logic i_wr_ready,
     input  logic i_ir_done,
@@ -19,29 +19,24 @@ module top_systolic_array #(
     input  logic i_or_done,
     
     output logic [3:0] led,
-    output logic [0:N-1][DATA_WIDTH*2-1:0] ofmap
+    output logic [0:N-1][DATA_WIDTH-1:0] ofmap
 );
 
-    // Control signals
+    // Control signals from systolic array
+    logic [0:N-1][DATA_WIDTH*2-1:0] raw_ofmap; 
     logic pe_en;
     logic psum_out_en;
     logic [2:0] o_state; 
-    wire i_reg_clear = 1'b0;
-    wire i_scan_en     = 1'b0;
-    wire [1:0] i_mode  = 2'b00;
     
-    // From the control_registers:
+    // Control Register Outputs
     logic start_reg;
     logic layer_type;
     logic [15:0] C_in;
-    logic [31:0] weight_offset;
+    logic [31:0] weight_base_addr, ifmap_base_addr, bias_base_addr;
+    logic [31:0] quant_mult;
+    logic [7:0]  quant_shift;
     logic done;
     
-    // dummy inputs test for testing control reg -> tile controller -> systolic array
-    logic [0:N-1][DATA_WIDTH-1:0] dummy_ifmap; 
-    logic [0:N-1][DATA_WIDTH-1:0] dummy_weight;
-    assign dummy_ifmap = '{8'd1, 8'd2, 8'd3, 8'd4, 8'd5, 8'd6, 8'd7, 8'd8}; 
-    assign dummy_weight = '{8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1};
     
     // Instantiate the systolic array
     systolic_array #(
@@ -56,11 +51,9 @@ module top_systolic_array #(
         .i_psum_out_en(psum_out_en),
         .i_scan_en(i_scan_en),
         .i_mode(i_mode),
-        /*.i_ifmap(ifmap),
-        .i_weight(weight),*/
-        .i_ifmap(dummy_ifmap),
-        .i_weight(dummy_weight),
-        .o_ofmap(ofmap)
+        .i_ifmap(ifmap),
+        .i_weight(weight),
+        .o_ofmap(raw_ofmap)
     );
     
     // instantiate the control reg
@@ -73,8 +66,14 @@ module top_systolic_array #(
         
         .layer_type(layer_type),
         .C_in(C_in),
-        .weight_offset(weight_offset),
         .start_reg(start_reg),
+        
+        .weight_base_addr(weight_base_addr),
+        .ifmap_base_addr(ifmap_base_addr),
+        .bias_base_addr(bias_base_addr),
+        
+        .quant_mult(quant_mult),
+        .quant_shift(quant_shift),
         
         .done(done)
     );
@@ -106,6 +105,33 @@ module top_systolic_array #(
         .o_done(done),
         .o_state(o_state)
     );
+    
+    // We process the 16-bit P-Sums from the array into 8-bit outputs
+    genvar i;
+    generate
+        for (i = 0; i < N; i++) begin : gen_quant
+            logic [31:0] bias_added;
+            logic [63:0] scaled; // High precision for multiplication
+            
+            always_comb begin
+                // A. Add Bias (16-bit bias added to 16-bit raw sum)
+                // Note: Real MobileNet uses bias_base_addr to fetch from memory; 
+                // here we use the lower 16 bits of the register as a placeholder.
+                bias_added = raw_ofmap[i] + bias_base_addr[15:0];
+                
+                // B. Scale (Quantization Multiply)
+                scaled = bias_added * quant_mult;
+                
+                // C. Shift and Clip to 8-bit (INT8 range 0-255 or -128-127)
+                // Using logical shift and simple truncation for now
+                if (psum_out_en) begin
+                    ofmap[i] = (scaled >> quant_shift);
+                end else begin
+                    ofmap[i] = 0;
+                end
+            end
+        end
+    endgenerate
     
     assign led = done ? 4'b1111 : 4'b0000;
     /*// Counter to track propagation
