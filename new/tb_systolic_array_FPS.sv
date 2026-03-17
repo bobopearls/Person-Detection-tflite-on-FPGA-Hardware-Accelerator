@@ -52,7 +52,6 @@ module tb_top_systolic_array;
         forever begin
             // Trigger whenever registers OR the internal FSM state changes
             @(uut.layer_type or uut.C_in or uut.start_reg or uut.done or uut.tile_ctrl.state);
-            
             // Translate the numeric state to a readable string
             case (uut.tile_ctrl.state)
                 3'd0: state_name = "IDLE";
@@ -63,32 +62,46 @@ module tb_top_systolic_array;
                 3'd5: state_name = "OUTPUT_ROUTING";
                 default: state_name = "UNKNOWN";
             endcase
-
+/*
             $display("[%0t ns] SYSTEM STATUS UPDATE:", $time);
             $display("       FSM State:  %s (%0d)", state_name, uut.tile_ctrl.state);
             $display("       Layer Type: %s", uut.layer_type ? "POINTWISE (1)" : "DEPTHWISE (0)");
             $display("       C_in:       %0d", uut.C_in);
             $display("       Start Reg:  %b", uut.start_reg);
             $display("       Done:  %b", uut.done);
-            $display("------------------------------------");
+            $display("------------------------------------");*/
         end
     end
     
+    // UPDATED TO MAKE IT FOR 1 CHANNEL GREYSCALE:
     // need to slice the memory to fit the systolic array's NxN matrix
     // EDIT: this is the reason why the inputs and weights were read weirdly
     always @(posedge clk) begin
-        if(uut.tile_ctrl.state == 3'd3 && uut.tile_ctrl.o_ir_pop_en)begin 
-            for (int i = 0; i < N; i++)begin
-                ifmap[i] <= ifmap_mem_raw[ifmap_pointer + i];
-                weight[i] <= weight_mem_raw[weight_pointer + i];
+        if(uut.tile_ctrl.state == 3'd3 && uut.tile_ctrl.o_ir_pop_en) begin 
+            // 1. IFMAP Logic: only channel 0 gets the data
+            ifmap[0] <= ifmap_mem_raw[ifmap_pointer];
+            
+            // 2. Zero padding for the rest of the channels (1 to 7)
+            for (int k = 1; k < N; k++) begin
+                ifmap[k] <= 8'h00;
             end
-            ifmap_pointer <= ifmap_pointer + N;// adnvance by 8 to the next one
-            weight_pointer <= weight_pointer + N; 
+            
+            // 3. Weight Logic: one weight per output filter
+            for (int j = 0; j < N; j++) begin
+                weight[j] <= weight_mem_raw[weight_pointer + j];
+            end
+            
+            // 4. Update pointers
+            ifmap_pointer  <= ifmap_pointer + 1;  // Advance by 1 pixel for B&W
+            weight_pointer <= weight_pointer + N; // Advance by N weights
+            
         end else if (uut.tile_ctrl.state == 3'd0) begin
+            // Reset pointers when in IDLE
             ifmap_pointer <= 0;
             weight_pointer <= 0;
         end      
     end
+
 
     // --------------------------------------------------
     // DUT
@@ -168,7 +181,7 @@ module tb_top_systolic_array;
         // Step 4: Exit FIFO_POP (Moves to COMPUTE)
         wait(uut.tile_ctrl.state == 3'd3);
         // wait for pointers to finish
-        wait(ifmap_pointer >= 72);
+        wait(ifmap_pointer >= 9);
         #20;
         tb_ir_done = 1; 
         tb_wr_done = 1;

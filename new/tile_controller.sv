@@ -221,8 +221,10 @@ module tile_controller # (
                         o_or_reg_clear <= 1;
                         o_or_en <= 0;
                         state <= IDLE;
+                        o_done <= 1; // this is what was miising for the done bit!
                     end else begin
                         o_or_en <= 1;
+                        o_done <= 0;
                     end
                 end
             endcase
