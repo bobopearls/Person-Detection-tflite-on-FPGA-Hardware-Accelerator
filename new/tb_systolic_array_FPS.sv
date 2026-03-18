@@ -39,13 +39,12 @@ module tb_top_systolic_array;
     
     initial begin
         // Load the one-value-per-line .mem files
-        $readmemh("MobilenetV1_Conv2d_0_weights_read.mem", weight_mem_raw);
+        $readmemh("MobilenetV1_Conv2d_0_depthwise_weights_read.mem", weight_mem_raw);
         $readmemh("video_input_fake.mem", ifmap_mem_raw);
         $readmemh("MobilenetV1_MobilenetV1_Conv2d_0_Conv2D_bias.mem", bias_mem);
         $display("--- Person Detection Data Loaded ---");
     end
     
-    // state name display in the Tcl console:
     string state_name;
     initial begin
         $display("--- Monitoring Control Registers ---");
@@ -99,6 +98,11 @@ module tb_top_systolic_array;
             // Reset pointers when in IDLE
             ifmap_pointer <= 0;
             weight_pointer <= 0;
+            tb_ir_ready = 0;
+            tb_wr_ready = 0;
+            tb_ir_done  = 0;
+            tb_wr_done  = 0;
+            tb_or_done  = 0;
         end      
     end
 
@@ -144,65 +148,67 @@ module tb_top_systolic_array;
     initial begin
         // Initialize
         nrst  = 0;
-        wr_en = 0; wr_addr = 0; wr_data = 0;
-        ifmap  = 0; weight = 0;
+        wr_en = 0; 
+        wr_addr = 0; 
+        wr_data = 0;
+        ifmap  = 0; 
+        weight = 0;
         
         #20;
         nrst = 1;
         repeat (5) @(posedge clk);
         
         // Step 1: Write Registers (Moves State from IDLE -> IDLE)
-        $display("Setting C_in to 9...");
-        write_reg(8'h04, 32'd9);  // Cin
-        $display("Setting Quantization w/ Mult 1024 and Shift 10...");
-        write_reg(16'h14, 32'd10); // quant shift
-        write_reg(16'h18, 32'd1024); // quant mult
-        
+        $display("Configuring the Layer...");
+        write_reg(8'h00, 32'h0); // layer type is 0 (DW)
+        write_reg(8'h04, 32'd9);  // Cin 
+        write_reg(8'h10, 32'd5); // Bias
+        write_reg(16'h14, 32'd8); // quant shift
+        write_reg(16'h18, 32'd256); // quant mult
+        write_reg(8'h1C, 32'h1); // Start bit
+        write_reg(8'h20, 32'd1); // stride is 1
+/*        
         // Fake Base Addresses:
         $display("Setting Dummy Base Addresses...");
         write_reg(8'h08, 32'hA000); // weight_base_addr
-        write_reg(8'h0C, 32'hB000); // ifmap_base_addr
+        write_reg(8'h0C, 32'hB000); // ifmap_base_addr*/
         
-        // Step 2: Start (Moves State IDLE -> CLEAR -> ACTIVATION_ROUTING)
-        $display("Triggering Start...");
-        write_reg(8'h1C, 32'h1);
-        
-        // Step 3: Exit ACTIVATION_ROUTING
+        // Step 3: Exit ACTIVATION_ROUTING -> FIFO POP
         wait(uut.tile_ctrl.state == 3'd2);
         #20;
         tb_ir_ready = 1; 
         tb_wr_ready = 1;
         
-        $display("Setting Bias Base Addr and Params...");
-        write_reg(8'h10, 32'h0000_0005); // Bias of 5 (added to every output)
-        write_reg(8'h14, 32'd8);        // quant_shift = 8
-        write_reg(8'h18, 32'd256);      // quant_mult = 256 (Effectively Scale = 1.0)
-        
-        // Step 4: Exit FIFO_POP (Moves to COMPUTE)
+        // Step 4: Exit FIFO_POP  -> COMPUTE
         wait(uut.tile_ctrl.state == 3'd3);
-        // wait for pointers to finish
-        wait(ifmap_pointer >= 9);
+        // changed to be dependent on the layer type
+        if (uut.layer_type == 0) begin
+            wait(ifmap_pointer >= 9); // DW 3x3
+        end else begin
+            wait(ifmap_pointer >= uut.C_in); // PW
+        end 
         #20;
         tb_ir_done = 1; 
         tb_wr_done = 1;
         
         wait(uut.tile_ctrl.state == 3'd5); // Wait for OUTPUT_ROUTING
-        $display("Computation Done. Signaling Output Router...");
+        $display("[%0t ns] Conv Done. Signaling Output...", $time);
         #100;
         tb_or_done = 1; // Trigger the transition back to IDLE
         #20;
         tb_or_done = 0;
 
-        // Step 5: Exit OUTPUT_ROUTING (Returns to IDLE)
+/*        // Step 5: Exit OUTPUT_ROUTING (Returns to IDLE)
         wait(uut.tile_ctrl.state == 3'd5);
         #50;
-        tb_or_done = 1; 
+        tb_or_done = 1; */
         
         // Step 6: Wait for Control Register Auto-Clear
         wait(uut.done == 1);
         $display("Final Verification: OFMAP[0] = %h", ofmap[0]);
+        #500;
+        $display("Simulation Finished at %0t", $time);
         
-        #100;
         $finish;
     end
     // Task for writing to registers (some random values)
@@ -236,7 +242,7 @@ module tb_top_systolic_array;
     // print something everytime there is a change in the variable or behavior
     // i also might turn off record waveform
     initial begin
-        $monitor("Time=%0t | State=%s | Start=%b | Layer=%b | Cin=%0d | Done=%b", 
-                 $time, state_name, uut.start_reg, uut.layer_type, uut.C_in, uut.done);
+        $monitor("Time=%0t | State=%s | if_ptr=%0d | ofmap[0]=%h", 
+                 $time, state_name, ifmap_pointer, ofmap[0]);
     end
 endmodule

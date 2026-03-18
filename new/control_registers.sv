@@ -9,7 +9,7 @@ module control_registers(
     
     output logic layer_type, // 0 = DW, 1 = PW
     output logic [15:0] C_in,
-    //output logic [31:0] weight_offset, renamed to weight base addr
+    output logic [1:0] stride, // stride 1 (01) and 2 (10)
     output logic start_reg,
     
     // Quantization Registers for int8
@@ -29,6 +29,7 @@ module control_registers(
         if (!nrst) begin
             layer_type    <= 0;
             C_in          <= 0;
+            stride        <= 2'b01; // make default stride 1
             start_reg     <= 0;
             quant_mult    <= 0;
             quant_shift   <= 0;
@@ -48,6 +49,7 @@ module control_registers(
                     8'h14: quant_shift      <= wr_data[7:0];
                     8'h18: quant_mult       <= wr_data;
                     8'h1C: start_reg        <= wr_data[0];
+                    8'h20: stride           <= wr_data[1:0]; // needed for the tile and layer controller
                 endcase
             end
     

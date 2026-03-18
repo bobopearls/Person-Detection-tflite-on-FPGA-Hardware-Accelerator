@@ -66,7 +66,10 @@ module tile_controller # (
     input logic i_wr_done,
     input logic i_or_done,
     output logic o_done,
-    output logic [2:0] o_state
+    output logic [2:0] o_state,
+    
+    // stride input handling
+    input logic [1:0] i_stride
 );
     logic [2:0] state;
     assign o_state = state;
@@ -176,22 +179,17 @@ module tile_controller # (
                 // all the data is loaded, know the layer type
                     // Done popping from both routers
                     if (i_ir_context_done & i_wr_context_done) begin
+                        cntr <= 0;
                         o_ir_pop_en <= 0;
                         o_wr_pop_en <= 0;
                         state <= COMPUTE;
-                        
-                        // Determine if there are more rows or columns being used
-                        /*if (i_s_r >= i_s_c) begin
-                            max_compute_cycles <= i_s_r + 1;
-                        end else begin
-                            max_compute_cycles <= i_s_c + 1;
-                        end*/
-                        if (i_layer_type) begin
-                            // POINTWISE (GEMM)
-                            max_compute_cycles <= i_Cin + ROWS - 1;
-                        end else begin
+
+                        if (i_layer_type) begin: PW_LATENCY
+                            // POINTWISE (GEMM) usually STRIDE is just 1
+                            max_compute_cycles <= i_Cin + ((ROWS - 1) * i_stride);
+                        end else begin: DW_LATENCY
                             // DEPTHWISE (3x3)
-                            max_compute_cycles <= 9 + ROWS - 1;
+                            max_compute_cycles <= 8'd9 + ((ROWS - 1) * i_stride);
                         end 
                     end
                     o_pe_en <= 1;

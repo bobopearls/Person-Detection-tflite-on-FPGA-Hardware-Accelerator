@@ -51,11 +51,13 @@ module top_systolic_array #(
         .i_psum_out_en(psum_out_en),
         .i_scan_en(i_scan_en),
         .i_mode(i_mode),
-        .i_ifmap(ifmap),
+        .i_ifmap(routerd_ifmap), // get the ifmap that is from the input router
         .i_weight(weight),
         .o_ofmap(raw_ofmap)
     );
     
+    logic [1:0] stride; // register to controller and router
+    logic [0:N-1][DATA_WIDTH-1:0] routed_ifmap;
     // instantiate the control reg
     control_registers ctrl_reg(
         .clk(clk),
@@ -65,6 +67,7 @@ module top_systolic_array #(
         .wr_data(wr_data),
         
         .layer_type(layer_type),
+        .stride(stride),
         .C_in(C_in),
         .start_reg(start_reg),
         
@@ -89,6 +92,7 @@ module top_systolic_array #(
         .i_reg_clear(i_reg_clear),
         .i_route_en(start_reg),
         .i_layer_type(layer_type),
+        .i_stride(stride),
         .i_Cin(C_in),
         
         // top level pins to connect to the controller
@@ -106,6 +110,17 @@ module top_systolic_array #(
         .o_state(o_state)
     );
     
+    input_router #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .N(N)
+    ) u_ifmap_router(
+        .clk(clk),
+        .layer_type(layer_type),
+        .stride(stride),
+        .ifmap_in(ifmap), // data from the top level 
+        .row_out(routed_ifmap) // send the adjusted data to the systolic array
+    );
+    
     // We process the 16-bit P-Sums from the array into 8-bit outputs
     genvar i;
     generate
@@ -117,7 +132,7 @@ module top_systolic_array #(
                 // A. Add Bias (16-bit bias added to 16-bit raw sum)
                 // Note: Real MobileNet uses bias_base_addr to fetch from memory; 
                 // here we use the lower 16 bits of the register as a placeholder.
-                bias_added = raw_ofmap[i] + bias_base_addr[15:0];
+                bias_added = raw_ofmap[i] + bias_base_addr[15:0]; // chnage this some other time
                 
                 // B. Scale (Quantization Multiply)
                 scaled = bias_added * quant_mult;
