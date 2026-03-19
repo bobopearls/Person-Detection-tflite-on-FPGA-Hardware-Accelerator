@@ -59,6 +59,8 @@ module tb_top_systolic_array;
                 3'd3: state_name = "FIFO_POP";
                 3'd4: state_name = "COMPUTE";
                 3'd5: state_name = "OUTPUT_ROUTING";
+                3'd7: state_name = "WAIT_FOR_ROUTE";
+                2'd8: state_name = "OUTPUT_STAGE";
                 default: state_name = "UNKNOWN";
             endcase
 /*
@@ -76,7 +78,7 @@ module tb_top_systolic_array;
     // need to slice the memory to fit the systolic array's NxN matrix
     // EDIT: this is the reason why the inputs and weights were read weirdly
     always @(posedge clk) begin
-        if(uut.tile_ctrl.state == 3'd3 && uut.tile_ctrl.o_ir_pop_en) begin 
+        if(uut.tile_ctrl.o_wr_pop_en && uut.tile_ctrl.o_ir_pop_en) begin 
             // 1. IFMAP Logic: only channel 0 gets the data
             ifmap[0] <= ifmap_mem_raw[ifmap_pointer];
             
@@ -175,21 +177,24 @@ module tb_top_systolic_array;
         
         // Step 3: Exit ACTIVATION_ROUTING -> FIFO POP
         wait(uut.tile_ctrl.state == 3'd2);
-        #20;
+        #10;
         tb_ir_ready = 1; 
         tb_wr_ready = 1;
         
         // Step 4: Exit FIFO_POP  -> COMPUTE
-        wait(uut.tile_ctrl.state == 3'd3);
-        // changed to be dependent on the layer type
+        wait(uut.tile_ctrl.state == 3'd3); // wait until the pointers say the data is snet
         if (uut.layer_type == 0) begin
             wait(ifmap_pointer >= 9); // DW 3x3
         end else begin
             wait(ifmap_pointer >= uut.C_in); // PW
         end 
-        #20;
+        @(posedge clk); // done signal then clear
         tb_ir_done = 1; 
         tb_wr_done = 1;
+        @(posedge clk); // clear
+        tb_ir_done = 0; 
+        tb_wr_done = 0;
+        
         
         wait(uut.tile_ctrl.state == 3'd5); // Wait for OUTPUT_ROUTING
         $display("[%0t ns] Conv Done. Signaling Output...", $time);
@@ -198,14 +203,17 @@ module tb_top_systolic_array;
         #20;
         tb_or_done = 0;
 
-/*        // Step 5: Exit OUTPUT_ROUTING (Returns to IDLE)
         wait(uut.tile_ctrl.state == 3'd5);
-        #50;
-        tb_or_done = 1; */
+        $display("[%0t ns] Wavefront Cleared. Starting Output Drain...", $time);
+        
+        #200;
+        tb_or_done = 1;
+        @(posedge clk);
+        tb_or_done = 0;
         
         // Step 6: Wait for Control Register Auto-Clear
         wait(uut.done == 1);
-        $display("Final Verification: OFMAP[0] = %h", ofmap[0]);
+        $display("Final Verification: OFMAP[0] = %h", ofmap[1]);
         #500;
         $display("Simulation Finished at %0t", $time);
         

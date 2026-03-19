@@ -37,6 +37,10 @@ module top_systolic_array #(
     logic [7:0]  quant_shift;
     logic done;
     
+    // input router wires
+    logic [0:N-1][DATA_WIDTH-1:0] routed_ifmap;
+    logic [0:N-1][DATA_WIDTH-1:0] routed_weight;
+    
     
     // Instantiate the systolic array
     systolic_array #(
@@ -51,13 +55,13 @@ module top_systolic_array #(
         .i_psum_out_en(psum_out_en),
         .i_scan_en(i_scan_en),
         .i_mode(i_mode),
-        .i_ifmap(routerd_ifmap), // get the ifmap that is from the input router
-        .i_weight(weight),
+        .i_ifmap(routed_ifmap), // get the ifmap that is from the input router
+        .i_weight(routed_weight), // get the weights from the router (adjusted already depending on the mode)
         .o_ofmap(raw_ofmap)
     );
     
     logic [1:0] stride; // register to controller and router
-    logic [0:N-1][DATA_WIDTH-1:0] routed_ifmap;
+    //logic [0:N-1][DATA_WIDTH-1:0] routed_ifmap;
     // instantiate the control reg
     control_registers ctrl_reg(
         .clk(clk),
@@ -115,10 +119,25 @@ module top_systolic_array #(
         .N(N)
     ) u_ifmap_router(
         .clk(clk),
+        .nrst(nrst),
+        .i_pop_en(tile_ctrl.o_ir_pop_en), // from the controller
         .layer_type(layer_type),
         .stride(stride),
-        .ifmap_in(ifmap), // data from the top level 
-        .row_out(routed_ifmap) // send the adjusted data to the systolic array
+        .ifmap_in(ifmap), // aka raw input from FIFO
+        .row_out(routed_ifmap) // send the adjusted data to the systolic array (zero padded)
+    );
+    
+    
+    weight_router #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .N(N)
+    ) u_weight_router(
+        .clk(clk),
+        .nrst(nrst),
+        .i_layer_type(layer_type),
+        .i_pop_en(tile_ctrl.o_wr_pop_en),
+        .w_data(weight), // same with input router style
+        .o_weight(routed_weight)
     );
     
     // We process the 16-bit P-Sums from the array into 8-bit outputs

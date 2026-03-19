@@ -70,12 +70,16 @@ module tile_controller # (
     
     // stride input handling
     input logic [1:0] i_stride
+    
 );
     logic [2:0] state;
     assign o_state = state;
     logic [ROWS:0] cntr;
 
     logic [ADDR_WIDTH-1:0] max_compute_cycles;
+    
+    // latency counter to accomodate the routers
+    logic [7:0] latency_counter;
 
     parameter int IDLE = 0;
     parameter int CLEAR = 1;
@@ -84,6 +88,8 @@ module tile_controller # (
     parameter int COMPUTE = 4;
     parameter int OUTPUT_ROUTING = 5;
     parameter int DONE = 6;
+    parameter int WAIT_FOR_ROUTE = 7; // waiting for the routers to adjust the data for feeding
+    parameter int OUTPUT_STAGE = 8; // know when it is safe to drain the output
 
     // Create an FSM to control the entire process
     /*
@@ -171,9 +177,14 @@ module tile_controller # (
                     if (i_ir_ready & i_wr_ready) begin
                         o_ir_pop_en <= 1;
                         o_wr_pop_en <= 1;
-                        state <= FIFO_POP;
+                        state <= WAIT_FOR_ROUTE;
                     end
                 end
+                WAIT_FOR_ROUTE: begin
+                    // since the routers will take some time to adjust the data to feed to the systolic, we need to wait for a while (1 cycle)
+                    state <= FIFO_POP;
+                end
+                
 
                 FIFO_POP: begin // this is where compute latency is estimated
                 // all the data is loaded, know the layer type
@@ -183,13 +194,14 @@ module tile_controller # (
                         o_ir_pop_en <= 0;
                         o_wr_pop_en <= 0;
                         state <= COMPUTE;
-
+                        
+                        // latency = data length + row stall + column stall
                         if (i_layer_type) begin: PW_LATENCY
                             // POINTWISE (GEMM) usually STRIDE is just 1
-                            max_compute_cycles <= i_Cin + ((ROWS - 1) * i_stride);
+                            max_compute_cycles <= i_Cin + (ROWS - 1) + (COLUMNS - 1);
                         end else begin: DW_LATENCY
                             // DEPTHWISE (3x3)
-                            max_compute_cycles <= 8'd9 + ((ROWS - 1) * i_stride);
+                            max_compute_cycles <= 8'd9 + ((ROWS - 1) * i_stride) + (COLUMNS - 1);
                         end 
                     end
                     o_pe_en <= 1;
@@ -200,17 +212,23 @@ module tile_controller # (
                     // Since all data is in systolic array, we only the number of cycles left
                     // for the last data to traverse to all the needed PE
                     // This is the number of cycles it will take to compute
-                    if (cntr < max_compute_cycles - 1) begin 
-                    // added -1 to adjust the original logic of isr and isc
+                    if (cntr < max_compute_cycles) begin
+                        o_psum_out_en <= 0; // just to be sure its never triggered 
                         o_pe_en <= 1;
                         cntr <= cntr + 1;
                     end else begin
-                        o_pe_en <= 0;
+                        o_pe_en <= 0; // STOP ARRAY
                         cntr <= 0;
-                        o_psum_out_en <= 1;
-                        state <= OUTPUT_ROUTING;
+                        o_psum_out_en <= 1; // drain
+                        state <= OUTPUT_STAGE;
                     end
                 end
+                
+                OUTPUT_STAGE: begin
+                    o_psum_out_en <= 1; // drain signal
+                    state <= OUTPUT_ROUTING; // treat this as some buffer stage
+                end
+                
 
                 OUTPUT_ROUTING: begin
                     o_psum_out_en <= 0;
