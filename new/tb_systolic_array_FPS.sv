@@ -88,13 +88,32 @@ module tb_top_systolic_array;
             end
             
             // 3. Weight Logic: one weight per output filter
-            for (int j = 0; j < N; j++) begin
+            /*for (int j = 0; j < N; j++) begin
                 weight[j] <= weight_mem_raw[weight_pointer + j];
+            end*/
+            // 3. Weight Logic: Mode Dependent
+            if (uut.layer_type == 1'b0) begin : DW_WEIGHTS
+                // Depthwise: We only need the NEXT weight in the kernel
+                weight[0] <= weight_mem_raw[weight_pointer];
+                // Optional: clear other wires to avoid noise
+                for (int j = 1; j < N; j++) weight[j] <= 8'h00; 
+                
+                weight_pointer <= weight_pointer + 1; // Increment by 1
+            end
+            else begin : PW_WEIGHTS
+                // Pointwise: Flash 8 weights at once (one per filter)
+                for (int j = 0; j < N; j++) begin
+                    weight[j] <= weight_mem_raw[weight_pointer + j];
+                end
+                weight_pointer <= weight_pointer + N; // Increment by 8
             end
             
+            
             // 4. Update pointers
-            ifmap_pointer  <= ifmap_pointer + 1;  // Advance by 1 pixel for B&W
-            weight_pointer <= weight_pointer + N; // Advance by N weights
+            /*ifmap_pointer  <= ifmap_pointer + 1;  // Advance by 1 pixel for B&W
+            weight_pointer <= weight_pointer + N; // Advance by N weights*/
+            // 4. Update IFMAP pointer
+            ifmap_pointer  <= ifmap_pointer + 1;
             
         end else if (uut.tile_ctrl.state == 3'd0) begin
             // Reset pointers when in IDLE
@@ -213,7 +232,7 @@ module tb_top_systolic_array;
         
         // Step 6: Wait for Control Register Auto-Clear
         wait(uut.done == 1);
-        $display("Final Verification: OFMAP[0] = %h", ofmap[1]);
+        $display("Final Verification: OFMAP[0] = %h", ofmap[0]);
         #500;
         $display("Simulation Finished at %0t", $time);
         
