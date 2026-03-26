@@ -8,8 +8,8 @@ module top_systolic_array #(
     input  logic wr_en,
     input  logic [15:0] wr_addr,
     input  logic [31:0] wr_data,
-    input  logic [0:N-1][DATA_WIDTH-1:0] ifmap,
-    input  logic [0:N-1][DATA_WIDTH-1:0] weight,
+    input  logic signed  [0:N-1][DATA_WIDTH-1:0] ifmap,
+    input  logic signed  [0:N-1][DATA_WIDTH-1:0] weight,
     
     //Handshake pins (will need to replace this with DMA signals sometime soon)
     input  logic i_ir_ready,
@@ -19,7 +19,7 @@ module top_systolic_array #(
     input  logic i_or_done,
     
     output logic [3:0] led,
-    output logic [0:N-1][DATA_WIDTH-1:0] ofmap
+    output logic signed [0:N-1][DATA_WIDTH-1:0] ofmap
 );
 
     // Control signals from systolic array
@@ -140,28 +140,34 @@ module top_systolic_array #(
         .o_weight(routed_weight)
     );
     
-    // We process the 16-bit P-Sums from the array into 8-bit outputs
+    // edited because it is signed
     genvar i;
     generate
         for (i = 0; i < N; i++) begin : gen_quant
-            logic [31:0] bias_added;
-            logic [63:0] scaled; // High precision for multiplication
+            logic signed [31:0] bias_added;
+            logic signed [63:0] scaled;
+            logic signed [63:0] shifted;
             
             always_comb begin
-                // A. Add Bias (16-bit bias added to 16-bit raw sum)
-                // Note: Real MobileNet uses bias_base_addr to fetch from memory; 
-                // here we use the lower 16 bits of the register as a placeholder.
-                bias_added = raw_ofmap[i] + bias_base_addr[15:0]; // chnage this some other time
+                // 1. Add Bias (Ensure signed 32-bit math)
+                bias_added = $signed(raw_ofmap[i]) + $signed(bias_base_addr);
                 
-                // B. Scale (Quantization Multiply)
-                scaled = bias_added * quant_mult;
+                // 2. Scale (Quantization Multiplier)
+                scaled = bias_added * $signed({1'b0, quant_mult});
                 
-                // C. Shift and Clip to 8-bit (INT8 range 0-255 or -128-127)
-                // Using logical shift and simple truncation for now
+                // 3. ARITHMETIC Shift (>>>) preserves the sign
+                shifted = scaled >>> quant_shift;
+                
+                // 4. Output with Saturation (Clipping)
                 if (psum_out_en) begin
-                    ofmap[i] = (scaled >> quant_shift);
+                    if (shifted > 127) 
+                        ofmap[i] = 8'sd127;
+                    else if (shifted < -128)
+                        ofmap[i] = 8'sd128;
+                    else
+                        ofmap[i] = shifted[7:0];
                 end else begin
-                    ofmap[i] = 0;
+                    ofmap[i] = 8'h00;
                 end
             end
         end
